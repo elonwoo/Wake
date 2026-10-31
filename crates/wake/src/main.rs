@@ -26,8 +26,9 @@ use gpui_component::Root;
 use i18n::t;
 use main_window::MainWindow;
 use workbench::{
-    OpenAbout, OpenSettings, OpenUpdates, PaletteDown, PaletteNextTab, PalettePrevTab, PaletteUp,
-    RefreshSessions, ToggleSearch, Workbench, KEY_CONTEXT, PALETTE_CONTEXT,
+    DeleteSession, OpenAbout, OpenSettings, OpenUpdates, PaletteDown, PaletteNextTab,
+    PalettePrevTab, PaletteUp, RefreshSessions, ToggleSearch, Workbench, KEY_CONTEXT,
+    PALETTE_CONTEXT,
 };
 
 actions!(
@@ -208,6 +209,7 @@ fn key_bindings() -> Vec<KeyBinding> {
     let mut keys = vec![
         KeyBinding::new(ui::SEARCH_KEYSTROKE, ToggleSearch, Some(KEY_CONTEXT)),
         KeyBinding::new("secondary-r", RefreshSessions, Some(KEY_CONTEXT)),
+        KeyBinding::new(ui::TRASH_KEYSTROKE, DeleteSession, Some(KEY_CONTEXT)),
         KeyBinding::new("secondary-,", OpenSettings, None),
         KeyBinding::new("secondary-q", Quit, None),
         KeyBinding::new("secondary-w", CloseWindow, None),

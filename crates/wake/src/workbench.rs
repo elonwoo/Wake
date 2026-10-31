@@ -79,7 +79,8 @@ actions!(
         PaletteUp,
         PaletteDown,
         PaletteNextTab,
-        PalettePrevTab
+        PalettePrevTab,
+        DeleteSession
     ]
 );
 
@@ -673,6 +674,21 @@ impl SessionsDelegate {
     }
 }
 
+/// 删除后焦点落到的那一条:按删除前的可见顺序,取被删块后面第一个没被删的
+/// 会话;删的是最后一条时往前落到上一条。anchor 取被删块的第一行(删的是整棵
+/// 子树,子会话紧跟其后)。没有下一条返回 None
+fn next_visible_key(rows: &[SessionListRow], deleted: &[String]) -> Option<String> {
+    let anchor = rows
+        .iter()
+        .position(|row| deleted.iter().any(|key| key == &row.meta.key))?;
+    rows[anchor..]
+        .iter()
+        .skip(1)
+        .chain(rows[..anchor].iter().rev())
+        .find(|row| !deleted.iter().any(|key| key == &row.meta.key))
+        .map(|row| row.meta.key.clone())
+}
+
 impl ListDelegate for SessionsDelegate {
     type Item = ListItem;
 
@@ -1108,6 +1124,44 @@ mod session_group_tests {
             is_error: false,
             child_id: None,
         }
+    }
+
+    fn row(key: &str, depth: u8) -> super::SessionListRow {
+        super::SessionListRow {
+            meta: session(key, 0, false),
+            depth,
+            child_count: 0,
+            expanded: false,
+            group_timestamp: 0,
+            group_pinned: false,
+        }
+    }
+
+    #[test]
+    fn delete_focus_lands_on_the_next_visible_session() {
+        let deleted = |keys: &[&str]| keys.iter().map(|key| key.to_string()).collect::<Vec<_>>();
+        let rows = vec![row("a", 0), row("b", 0), row("c", 0)];
+        assert_eq!(
+            super::next_visible_key(&rows, &deleted(&["b"])).as_deref(),
+            Some("c")
+        );
+        // 删的是最后一条就往前落到上一条
+        assert_eq!(
+            super::next_visible_key(&rows, &deleted(&["c"])).as_deref(),
+            Some("b")
+        );
+        // 整棵子树(根 + 展开的子会话)一起删时,焦点落到子树之后
+        let rows = vec![row("a", 0), row("root", 0), row("child", 1), row("b", 0)];
+        assert_eq!(
+            super::next_visible_key(&rows, &deleted(&["root", "child"])).as_deref(),
+            Some("b")
+        );
+        // 全删光,或目标已不在列表里
+        assert_eq!(
+            super::next_visible_key(&rows, &deleted(&["a", "root", "child", "b"])),
+            None
+        );
+        assert_eq!(super::next_visible_key(&rows, &deleted(&["missing"])), None);
     }
 
     #[test]
@@ -5767,6 +5821,13 @@ impl Workbench {
         })
     }
 
+    /// 删除后焦点落到的那一条:按删除前的可见顺序,取被删块后面第一个没被删
+    /// 的会话;删的是最后一条时往前落到上一条。没有下一条返回 None
+    fn next_visible_session(&self, deleted: &[String], cx: &App) -> Option<String> {
+        let list = self.list_state.read(cx);
+        next_visible_key(&list.delegate().rows, deleted)
+    }
+
     /// 一条会话往上的可见祖先,近的在前(子代理 → 分支 → 原件),一直到根;关系万一成环就停
     fn visible_ancestors(&self, key: &str) -> Vec<String> {
         let mut ancestors: Vec<String> = Vec::new();
@@ -6017,11 +6078,16 @@ impl Workbench {
             this.update_in(cx, |this, window, cx| match result {
                 Ok(hidden) => {
                     // 等待期间用户可能已翻到别的会话，只在仍停在被删子树时清空。
-                    if this
+                    let still_on_deleted = this
                         .detail
                         .as_ref()
-                        .is_some_and(|detail| keys.iter().any(|key| key == &detail.meta.key))
-                    {
+                        .is_some_and(|detail| keys.iter().any(|key| key == &detail.meta.key));
+                    // 删除前先记下"焦点该落到哪一条":trash 完成后列表已经重排,
+                    // 旧行查不回来了
+                    let next_key = still_on_deleted
+                        .then(|| this.next_visible_session(&keys, cx))
+                        .flatten();
+                    if still_on_deleted {
                         this.detail = None;
                     }
                     let message = if hidden {
@@ -6037,6 +6103,14 @@ impl Workbench {
                     window.push_notification(Notification::success(message), cx);
                     // 立刻把它从列表摘掉,不等 watcher 那 800ms 去抖
                     this.refresh(cx);
+                    // 删完把焦点交给下一条会话(删的是最后一条就落到上一条),
+                    // 别停在"未选择会话"的空态。不主动滚动:列表原地回收,下一条
+                    // 正好顶到被删那条的位置;滚到 Top 反而把整列拽走
+                    if let Some(key) = next_key {
+                        this.pending_list_selection = None;
+                        this.open_detail(&key, None, window, cx);
+                        this.select_list_key(&key, false, window, cx);
+                    }
                     // Settings 正开在 Data 页:已隐藏的会话跟着多一项
                     if hidden && this.settings_window.is_some() {
                         this.refresh_hidden_sessions(cx);
@@ -7793,7 +7867,19 @@ impl Workbench {
                     .when(!menu_is_remote, |menu| {
                         menu.separator().item(
                             PopupMenuItem::element(|_, cx| {
-                                div().text_color(cx.theme().danger).child(move_to_trash())
+                                h_flex()
+                                    .flex_1()
+                                    .items_center()
+                                    .justify_between()
+                                    .child(
+                                        div().text_color(cx.theme().danger).child(move_to_trash()),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_size(FONT_LABEL)
+                                            .text_color(cx.theme().muted_foreground)
+                                            .child(crate::ui::trash_key_hint()),
+                                    )
                             })
                             .icon(
                                 icon("icons/trash-2.svg")
@@ -10785,6 +10871,13 @@ impl Render for Workbench {
             .on_action(cx.listener(|this, _: &OpenSettings, _window, cx| this.open_settings(cx)))
             .on_action(cx.listener(|this, _: &OpenUpdates, _window, cx| this.open_updates(cx)))
             .on_action(cx.listener(|this, _: &OpenAbout, _window, cx| this.open_about(cx)))
+            // ⌘⌫:与详情「更多」菜单同一入口。清理页有自己的一批选中项、确认框开着时
+            // 也不该再弹一层,这两处都不接快捷键
+            .on_action(cx.listener(|this, _: &DeleteSession, window, cx| {
+                if !this.cleanup.open && !window.has_active_dialog(cx) {
+                    this.confirm_delete(window, cx);
+                }
+            }))
             .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, window, cx| {
                 this.update_detail_selection_auto_scroll(event, window, cx)
             }))

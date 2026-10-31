@@ -227,6 +227,13 @@ trash_copy!("Trash", "Trash");
 /// ⌘K 面板的唯一绑定串——main.rs 的 bind_keys 与下方徽标同源,改键只动这里
 pub const SEARCH_KEYSTROKE: &str = "secondary-k";
 
+/// 详情「移到废纸篓」的唯一绑定串——键位表与更多菜单的提示同源。macOS 跟
+/// Finder 用 ⌘⌫;Windows/Linux 的惯用键就是 Del 本身
+#[cfg(target_os = "macos")]
+pub const TRASH_KEYSTROKE: &str = "secondary-backspace";
+#[cfg(not(target_os = "macos"))]
+pub const TRASH_KEYSTROKE: &str = "delete";
+
 /// 快捷键徽标,从真实绑定串派生("⌘K"/"Ctrl+K"——secondary→平台键与显示形制都由
 /// gpui/Kbd 持有,这里零平台知识)。绑定串是写死的常量,解析不了是代码错
 pub fn key_hint(keystroke: &str) -> String {
@@ -239,6 +246,13 @@ pub fn search_key_hint() -> &'static str {
     use std::sync::OnceLock;
     static HINT: OnceLock<String> = OnceLock::new();
     HINT.get_or_init(|| key_hint(SEARCH_KEYSTROKE))
+}
+
+/// 移到废纸篓的快捷键徽标
+pub fn trash_key_hint() -> &'static str {
+    use std::sync::OnceLock;
+    static HINT: OnceLock<String> = OnceLock::new();
+    HINT.get_or_init(|| key_hint(TRASH_KEYSTROKE))
 }
 
 // ---------------- 间距与结构 ----------------
